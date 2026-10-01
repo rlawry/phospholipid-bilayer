@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Phospholipid Bilayer Simulation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ecf:#cfe1e8; --cyto:#e6d3e6; --lumen:#cfe1e8; --vig:34,44,72; --speck:50,56,84;
+  --headA:#b8336a; --headB:#3c4fb0; --tail:#a8892f;
+  --ink:#1f2433; --muted:#4f5568; --panel:rgba(255,255,255,.82); --edge:rgba(31,36,51,.14);
+  --ring:#1f2433; --glow:255,214,90;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ecf:#0d242b; --cyto:#20142a; --lumen:#0d242b; --vig:0,0,0; --speck:190,225,235;
+    --headA:#ff7aa6; --headB:#8d9cff; --tail:#d9bb5c;
+    --ink:#eef0f6; --muted:#a9adbd; --panel:rgba(18,20,28,.78); --edge:rgba(238,240,246,.16);
+    --ring:#eef0f6; --glow:255,224,120;
+  }
+}
+:root[data-theme="dark"]{
+  --ecf:#0d242b; --cyto:#20142a; --lumen:#0d242b; --vig:0,0,0; --speck:190,225,235;
+  --headA:#ff7aa6; --headB:#8d9cff; --tail:#d9bb5c;
+  --ink:#eef0f6; --muted:#a9adbd; --panel:rgba(18,20,28,.78); --edge:rgba(238,240,246,.16);
+  --ring:#eef0f6; --glow:255,224,120;
+}
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);}
+html{scroll-padding-top:env(safe-area-inset-top,0px);}
+*,*::before,*::after{box-sizing:inherit}
+html,body{height:100%;margin:0;overflow:hidden;background:var(--ecf);color:var(--ink);
+  font-family:"Atkinson Hyperlegible",system-ui,-apple-system,"Segoe UI",sans-serif;}
+canvas{display:block;width:100%;height:100%;touch-action:none;cursor:grab}
+canvas.pushing{cursor:grabbing}
+.panel{position:fixed;background:var(--panel);border:1px solid var(--edge);
+  backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);pointer-events:none}
+#intro{top:calc(env(safe-area-inset-top,0px) + 14px);left:14px;max-width:min(340px,calc(100% - 28px));padding:14px 16px}
+#intro h1{margin:0 0 6px;font-size:1.25rem;line-height:1.2;font-weight:700}
+#intro p{margin:0;font-size:.92rem;line-height:1.45;color:var(--muted)}
+#legend{bottom:calc(env(safe-area-inset-bottom,0px) + 14px);left:14px;padding:10px 14px;display:flex;gap:12px;align-items:center;font-size:.85rem;color:var(--muted)}
+#legend svg{flex:none}
+#legend div{line-height:1.4}
+#legend i{font-style:normal;display:inline-block;width:10px;height:10px;margin-right:5px;vertical-align:-1px}
+#reset{position:fixed;bottom:calc(env(safe-area-inset-bottom,0px) + 14px);right:14px;font:inherit;font-weight:700;font-size:.95rem;
+  color:var(--ink);background:var(--panel);border:1px solid var(--edge);padding:9px 18px;cursor:pointer}
+#reset:hover{border-color:var(--ink)}
+#reset:focus-visible{outline:3px solid var(--headB);outline-offset:2px}
+#toast{position:fixed;left:50%;top:calc(env(safe-area-inset-top,0px) + 16px);transform:translate(-50%,-8px);opacity:0;
+  transition:opacity .25s,transform .25s;padding:8px 16px;font-weight:700;font-size:.95rem;white-space:nowrap}
+#toast.show{opacity:1;transform:translate(-50%,0)}
+@media (max-width:720px){
+  #intro p{font-size:.84rem}
+  #toast{top:auto;bottom:calc(env(safe-area-inset-bottom,0px) + 70px)}
+  #legend{display:none}
+}
+</style>
+</head>
+<body>
+<canvas id="c" aria-label="Interactive cell membrane simulation"></canvas>
+
+<div class="panel" id="intro">
+  <h1>The phospholipid bilayer</h1>
+  <p>Click and drag into the membrane from either side. Push far enough and it wraps around the cursor and pinches off a vesicle. Let go and the vesicle drifts back and fuses with the membrane. You can also grab a vesicle and move it.</p>
+</div>
+
+<div class="panel" id="legend" aria-hidden="true">
+  <svg width="34" height="52" viewBox="0 0 34 52">
+    <circle cx="17" cy="9" r="7" fill="var(--headA)"/>
+    <path d="M13 16 V46 M21 16 V28 L24 33 V46" stroke="var(--tail)" stroke-width="2.4" fill="none" stroke-linecap="round"/>
+  </svg>
+  <div>
+    Head: phosphate group, hydrophilic<br>
+    Tails: fatty acids, hydrophobic<br>
+    <i style="background:var(--headA)"></i>outer leaflet &nbsp; <i style="background:var(--headB)"></i>inner leaflet
+  </div>
+</div>
+
+<button id="reset" type="button">Reset membrane</button>
+<div class="panel" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+(() => {
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+
+// ---------- constants ----------
+const S = 8;              // node spacing along membrane midplane
+const HL = 17;            // half bilayer thickness (head centre to midplane)
+const HEAD_R = 3.5;
+const LIP_SP = 7.4;       // lipid spacing along each leaflet
+const R = 44;             // vesicle / finger wrap radius (midplane)
+const NECK_MIN = HL + 7;
+const PINCH_DEPTH = 125;  // how far past the membrane the cursor must push
+const TETHER = 0.04, BEND = 0.2, STIFF = 0.5, DAMP = 0.6;
+
+let W = 0, H = 0, DPR = 1, restX = 0;
+let nodes = [], vesicles = [], overlay = null;
+let formed = 0, fused = 0;
+let C = {};
+
+function readTheme(){
+  const cs = getComputedStyle(document.documentElement);
+  const g = n => cs.getPropertyValue(n).trim();
+  C = { ecf:g('--ecf'), cyto:g('--cyto'), lumen:g('--lumen'), A:g('--headA'), B:g('--headB'),
+        tail:g('--tail'), ring:g('--ring'), glow:g('--glow'), muted:g('--muted'),
+        vig:g('--vig'), speck:g('--speck') };
+  if (W) buildOverlay();
+}
+readTheme();
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', readTheme);
+
+// ---------- microscope field ----------
+function rng(seed){ // small seeded PRNG so debris stays put on resize
+  return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+}
+function buildOverlay(){
+  const o = document.createElement('canvas');
+  o.width = Math.round(W * DPR); o.height = Math.round(H * DPR);
+  const g = o.getContext('2d');
+  g.scale(DPR, DPR);
+  const rand = rng(7);
+
+  // out-of-focus debris and bubbles drifting in the optical path
+  for (let i = 0; i < 46; i++){
+    const x = rand() * W, y = rand() * H, r = 2 + Math.pow(rand(), 2.2) * 16, a = 0.05 + rand() * 0.1;
+    const ring = rand() < 0.35;
+    const gr = g.createRadialGradient(x, y, 0, x, y, r);
+    if (ring){
+      gr.addColorStop(0, `rgba(${C.speck},0)`);
+      gr.addColorStop(0.62, `rgba(${C.speck},0)`);
+      gr.addColorStop(0.86, `rgba(${C.speck},${a * 1.6})`);
+      gr.addColorStop(1, `rgba(${C.speck},0)`);
+    } else {
+      gr.addColorStop(0, `rgba(${C.speck},${a})`);
+      gr.addColorStop(1, `rgba(${C.speck},0)`);
+    }
+    g.fillStyle = gr; g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill();
+  }
+
+  // film grain
+  const tile = document.createElement('canvas'); tile.width = tile.height = 128;
+  const tg = tile.getContext('2d'), img = tg.createImageData(128, 128);
+  for (let i = 0; i < img.data.length; i += 4){
+    const v = 90 + rand() * 120; img.data[i] = img.data[i + 1] = img.data[i + 2] = v; img.data[i + 3] = 255;
+  }
+  tg.putImageData(img, 0, 0);
+  g.save(); g.globalAlpha = 0.09; g.globalCompositeOperation = 'overlay';
+  g.fillStyle = g.createPattern(tile, 'repeat'); g.fillRect(0, 0, W, H); g.restore();
+
+  // uneven illumination: bright centre, falling off toward the edges of the field
+  const cx = W * 0.5, cy = H * 0.47, r0 = Math.min(W, H) * 0.42, r1 = Math.hypot(W, H) * 0.56;
+  const vg = g.createRadialGradient(cx, cy, r0, cx, cy, r1);
+  vg.addColorStop(0, `rgba(${C.vig},0)`);
+  vg.addColorStop(0.5, `rgba(${C.vig},0.14)`);
+  vg.addColorStop(1, `rgba(${C.vig},0.62)`);
+  g.fillStyle = vg; g.fillRect(0, 0, W, H);
+
+  // soft lamp bloom just off-centre
+  const bl = g.createRadialGradient(cx - W * 0.04, cy - H * 0.06, 0, cx, cy, Math.max(W, H) * 0.5);
+  bl.addColorStop(0, 'rgba(255,255,255,0.10)'); bl.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = bl; g.fillRect(0, 0, W, H);
+  overlay = o;
+}
+
+// ---------- setup ----------
+const mk = (x, y, g = 0) => ({ x, y, px: x, py: y, g });
+
+function initMembrane(){
+  nodes = [];
+  for (let y = -80; y <= H + 80; y += S) nodes.push(mk(restX, y));
+}
+
+function resize(){
+  const oldRest = restX, first = W === 0;
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = cv.clientWidth; H = cv.clientHeight;
+  cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+  restX = Math.round(W * 0.5);
+  buildOverlay();
+  if (first) { initMembrane(); spawnDemo(); return; }
+  const dx = restX - oldRest;
+  for (const n of nodes){ n.x += dx; n.px += dx; }
+  for (const v of vesicles){ v.x += dx; }
+  nodes[0].y = -80; nodes[nodes.length - 1].y = H + 80;
+}
+
+function spawnDemo(){
+  vesicles.push(newVesicle(restX + Math.min(230, W * 0.3), H * 0.62, 'L'));
+}
+
+function newVesicle(x, y, innerSide){
+  return { x, y, vx: 0, vy: 0, held: false, ox: 0, oy: 0, rot: Math.random() * 6.28,
+           spin: (Math.random() - .5) * 0.004, innerSide, age: 0, g: 1 };
+}
+
+// ---------- pointer ----------
+const ptr = { x: 0, y: 0, down: false, mode: null, dir: 1, ves: null };
+const finger = { x: 0, y: 0 };
+
+function nearestNode(x, y){
+  let best = -1, bd = Infinity;
+  for (let i = 1; i < nodes.length - 1; i++){
+    const d = (nodes[i].x - x) ** 2 + (nodes[i].y - y) ** 2;
+    if (d < bd){ bd = d; best = i; }
+  }
+  return { i: best, d: Math.sqrt(bd) };
+}
+function normalR(i){
+  const a = nodes[Math.max(0, i - 1)], b = nodes[Math.min(nodes.length - 1, i + 1)];
+  let tx = b.x - a.x, ty = b.y - a.y; const l = Math.hypot(tx, ty) || 1;
+  tx /= l; ty /= l; return { x: ty, y: -tx };
+}
+
+cv.addEventListener('pointerdown', e => {
+  cv.setPointerCapture(e.pointerId);
+  ptr.down = true; ptr.x = e.clientX; ptr.y = e.clientY;
+  // grab a free vesicle?
+  for (let k = vesicles.length - 1; k >= 0; k--){
+    const v = vesicles[k];
+    if (Math.hypot(v.x - ptr.x, v.y - ptr.y) < R + HL){
+      ptr.mode = 'ves'; ptr.ves = v; v.held = true; v.ox = v.x - ptr.x; v.oy = v.y - ptr.y;
+      cv.classList.add('pushing'); return;
+    }
+  }
+  const nn = nearestNode(ptr.x, ptr.y), n = nodes[nn.i], nr = normalR(nn.i);
+  const side = (ptr.x - n.x) * nr.x + (ptr.y - n.y) * nr.y; // >0 : cytoplasm side
+  ptr.dir = side > 0 ? -1 : 1;
+  ptr.mode = 'push';
+  finger.x = ptr.x; finger.y = ptr.y;
+  if (nn.d < R + HL + 6){ // started on the membrane: back the finger off to the start side
+    const s = side > 0 ? 1 : -1;
+    finger.x = n.x + nr.x * s * (R + HL + 8);
+    finger.y = n.y + nr.y * s * (R + HL + 8);
+  }
+  cv.classList.add('pushing');
+});
+cv.addEventListener('pointermove', e => { ptr.x = e.clientX; ptr.y = e.clientY; });
+function release(){
+  ptr.down = false;
+  if (ptr.ves){ ptr.ves.held = false; ptr.ves.vx *= .3; ptr.ves.vy *= .3; }
+  ptr.ves = null; ptr.mode = null;
+  cv.classList.remove('pushing');
+}
+cv.addEventListener('pointerup', release);
+cv.addEventListener('pointercancel', release);
+
+document.getElementById('reset').addEventListener('click', () => {
+  initMembrane(); vesicles = []; formed = fused = 0; spawnDemo();
+});
+
+// ---------- UI ----------
+const toastEl = document.getElementById('toast');
+const introEl = document.getElementById('intro');
+let toastT = 0;
+function toast(msg){
+  toastEl.textContent = msg; toastEl.classList.add('show');
+  clearTimeout(toastT); toastT = setTimeout(() => toastEl.classList.remove('show'), 2200);
+}
+
+// ---------- physics ----------
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const smooth = t => { t = clamp(t, 0, 1); return t * t * (3 - 2 * t); };
+
+function fingerDepth(){ return (finger.x - restX) * ptr.dir; }
+
+function fingerConstraint(){
+  const dir = ptr.dir, fx = finger.x, fy = finger.y;
+  const prog = clamp((fingerDepth() - R * 0.2) / (PINCH_DEPTH - R * 0.2), 0, 1);
+  const neck = lerp(R, NECK_MIN, Math.pow(prog, 1.3));
+  for (let i = 1; i < nodes.length - 1; i++){
+    const p = nodes[i];
+    let dx = p.x - fx, dy = p.y - fy;
+    const u = -dx * dir; // distance behind the finger centre
+    if (u > 0){
+      const hw = u < R * 0.35 ? R : lerp(R, neck, smooth((u - R * 0.35) / (R * 0.75)));
+      const sg = dy >= 0 ? 1 : -1;
+      if (prog > 0 && u > R * 0.35 && (p.x - restX) * dir > 3 && Math.abs(dy) < R + 36){
+        p.y += (fy + sg * hw - p.y) * 0.05 * prog; // draw the neck closed
+      }
+      if (Math.abs(p.y - fy) < hw) p.y = fy + sg * hw;
+    }
+    dx = p.x - fx; dy = p.y - fy;
+    let d = Math.hypot(dx, dy);
+    if (d < R){
+      if (d < 1e-3){ dx = dir; dy = 0; d = 1; }
+      p.x = fx + dx / d * R; p.y = fy + dy / d * R;
+    }
+  }
+}
+
+function vesicleRepel(v){
+  const rr = R + 2 * HL;
+  for (let i = 1; i < nodes.length - 1; i++){
+    const p = nodes[i];
+    const dx = p.x - v.x, dy = p.y - v.y, d = Math.hypot(dx, dy);
+    if (d < rr && d > 1e-3){ p.x = v.x + dx / d * rr; p.y = v.y + dy / d * rr; }
+  }
+}
+
+function remesh(){
+  for (let i = 0; i < nodes.length - 1; i++){
+    const a = nodes[i], b = nodes[i + 1];
+    const d = Math.hypot(b.x - a.x, b.y - a.y);
+    if (d > S * 1.6){
+      const m = mk((a.x + b.x) / 2, (a.y + b.y) / 2, Math.max(a.g, b.g));
+      m.px = (a.px + b.px) / 2; m.py = (a.py + b.py) / 2;
+      nodes.splice(i + 1, 0, m); i--;
+    } else if (d < S * 0.7 && i + 1 < nodes.length - 1){
+      a.g = Math.max(a.g, b.g);
+      nodes.splice(i + 1, 1); i--;
+    }
+  }
+}
+
+function pinch(){
+  const fx = finger.x, fy = finger.y;
+  const k = nearestNode(fx, fy).i;
+  const cut = i => Math.hypot(nodes[i].x - fx, nodes[i].y - fy) < R + 30;
+  let a = k, b = k;
+  while (a - 1 > 0 && cut(a - 1)) a--;
+  while (b + 1 < nodes.length - 1 && cut(b + 1)) b++;
+  nodes.splice(a, b - a + 1);
+  for (let j = Math.max(1, a - 4); j < Math.min(nodes.length - 1, a + 4); j++) nodes[j].g = 1;
+  const v = newVesicle(fx, fy, ptr.dir > 0 ? 'L' : 'R');
+  v.held = true; v.ox = fx - ptr.x; v.oy = fy - ptr.y;
+  vesicles.push(v);
+  ptr.mode = 'ves'; ptr.ves = v;
+  formed++;
+  toast(ptr.dir > 0 ? 'Endocytosis: a vesicle pinched off into the cytoplasm'
+                    : 'Budding: a vesicle pinched off outside the cell');
+}
+
+function fuse(v, k){
+  const P = nodes[k];
+  const near = i => Math.hypot(nodes[i].x - v.x, nodes[i].y - v.y) < R + 2 * HL + 26;
+  let a = k, b = k;
+  while (a - 1 > 0 && near(a - 1)) a--;
+  while (b + 1 < nodes.length - 1 && near(b + 1)) b++;
+  const base = Math.atan2(P.y - v.y, P.x - v.x), phi = 0.75, span = Math.PI * 2 - 2 * phi;
+  const m = Math.ceil(span * R / S), arc = [];
+  for (let i = 0; i <= m; i++){
+    const ang = base + phi + span * i / m;
+    arc.push(mk(v.x + Math.cos(ang) * R, v.y + Math.sin(ang) * R, 1));
+  }
+  const prev = nodes[a - 1];
+  const d0 = Math.hypot(arc[0].x - prev.x, arc[0].y - prev.y);
+  const d1 = Math.hypot(arc[m].x - prev.x, arc[m].y - prev.y);
+  if (d1 < d0) arc.reverse();
+  nodes.splice(a, b - a + 1, ...arc);
+  vesicles.splice(vesicles.indexOf(v), 1);
+  fused++;
+  toast(v.innerSide === 'L' && (v.x > restX)
+        ? 'Exocytosis: the vesicle fused and the membrane grew'
+        : 'Fusion: the vesicle joined the membrane');
+}
+
+function step(){
+  const n = nodes.length;
+  const SUB = 3;
+  for (let s = 0; s < SUB; s++){
+    for (let i = 1; i < n - 1 && i < nodes.length - 1; i++){
+      const p = nodes[i];
+      const vx = (p.x - p.px) * DAMP, vy = (p.y - p.py) * DAMP;
+      p.px = p.x; p.py = p.y;
+      p.x += vx + (restX - p.x) * TETHER; p.y += vy;
+    }
+    if (ptr.mode === 'push'){
+      const dx = ptr.x - finger.x, dy = ptr.y - finger.y, d = Math.hypot(dx, dy), mx = 6;
+      if (d > mx){ finger.x += dx / d * mx; finger.y += dy / d * mx; } else { finger.x = ptr.x; finger.y = ptr.y; }
+    }
+    for (const v of vesicles) if (v.held){
+      v.x = lerp(v.x, ptr.x + v.ox, 0.25); v.y = lerp(v.y, ptr.y + v.oy, 0.25);
+    }
+    for (let it = 0; it < 5; it++){
+      for (let i = 0; i < nodes.length - 1; i++){
+        const a = nodes[i], b = nodes[i + 1];
+        let dx = b.x - a.x, dy = b.y - a.y; const d = Math.hypot(dx, dy) || 1e-6;
+        const c = (d - S) / d * 0.5 * STIFF;
+        dx *= c; dy *= c;
+        if (i > 0){ a.x += dx; a.y += dy; }
+        if (i + 1 < nodes.length - 1){ b.x -= dx; b.y -= dy; }
+      }
+      for (let i = 1; i < nodes.length - 1; i++){
+        const a = nodes[i - 1], p = nodes[i], b = nodes[i + 1];
+        p.x += ((a.x + b.x) / 2 - p.x) * BEND; p.y += ((a.y + b.y) / 2 - p.y) * BEND;
+      }
+      if (ptr.mode === 'push') fingerConstraint();
+      for (const v of vesicles) if (v.held) vesicleRepel(v);
+      nodes[0].x = restX; nodes[0].y = -80;
+      const L = nodes[nodes.length - 1]; L.x = restX; L.y = H + 80;
+    }
+    if (ptr.mode === 'push' && fingerDepth() >= PINCH_DEPTH) pinch();
+  }
+  remesh();
+
+  // vesicles
+  for (let k = vesicles.length - 1; k >= 0; k--){
+    const v = vesicles[k];
+    v.age++; v.rot += v.spin; v.g *= 0.97;
+    if (v.held) continue;
+    const nn = nearestNode(v.x, v.y);
+    if (nn.d < R + 2 * HL + 1 && v.age > 20){ fuse(v, nn.i); continue; }
+    const p = nodes[nn.i];
+    const dx = p.x - v.x, dy = p.y - v.y, d = Math.hypot(dx, dy) || 1;
+    v.vx += dx / d * 0.018 + (Math.random() - .5) * 0.06;
+    v.vy += dy / d * 0.018 + (Math.random() - .5) * 0.06;
+    const sp = Math.hypot(v.vx, v.vy), max = 0.75;
+    if (sp > max){ v.vx *= max / sp; v.vy *= max / sp; }
+    v.vx *= 0.985; v.vy *= 0.985;
+    v.x += v.vx; v.y += v.vy;
+    v.y = clamp(v.y, R, H - R);
+    v.x = clamp(v.x, R, W - R);
+    for (const o of vesicles){ // keep vesicles apart
+      if (o === v) continue;
+      const ox = v.x - o.x, oy = v.y - o.y, od = Math.hypot(ox, oy), min = 2 * (R + HL) + 4;
+      if (od < min && od > 1e-3){ v.x += ox / od * (min - od) * 0.5; v.y += oy / od * (min - od) * 0.5; }
+    }
+  }
+  for (const p of nodes) p.g *= 0.975;
+}
+
+// ---------- drawing ----------
+function leafletSamples(sideSign){
+  // sideSign = -1 : left / outer leaflet ; +1 : right / inner leaflet
+  const n = nodes.length, pts = new Array(n);
+  for (let i = 0; i < n; i++){
+    const a = nodes[Math.max(0, i - 2)], b = nodes[Math.min(n - 1, i + 2)];
+    let tx = b.x - a.x, ty = b.y - a.y; const l = Math.hypot(tx, ty) || 1; tx /= l; ty /= l;
+    const nx = ty * sideSign, ny = -tx * sideSign; // right normal = (ty,-tx)
+    pts[i] = { x: nodes[i].x + nx * HL, y: nodes[i].y + ny * HL, nx, ny, g: nodes[i].g };
+  }
+  const out = [];
+  let acc = LIP_SP * 0.5;
+  for (let i = 0; i < n - 1; i++){
+    const a = pts[i], b = pts[i + 1];
+    const L = Math.hypot(b.x - a.x, b.y - a.y);
+    while (acc <= L){
+      const t = L ? acc / L : 0;
+      let nx = lerp(a.nx, b.nx, t), ny = lerp(a.ny, b.ny, t); const nl = Math.hypot(nx, ny) || 1;
+      out.push({ x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t), nx: nx / nl, ny: ny / nl, g: lerp(a.g, b.g, t) });
+      acc += LIP_SP;
+    }
+    acc -= L;
+  }
+  return out;
+}
+
+function addLipid(tails, heads, x, y, nx, ny, len){
+  const tx = -ny, ty = nx, o = 1.7;
+  const sx = x - nx * HEAD_R, sy = y - ny * HEAD_R;
+  const ex = x - nx * len, ey = y - ny * len;
+  // saturated tail
+  tails.moveTo(sx + tx * o, sy + ty * o); tails.lineTo(ex + tx * o, ey + ty * o);
+  // unsaturated tail with a kink
+  const mx = lerp(sx, ex, 0.45), my = lerp(sy, ey, 0.45);
+  tails.moveTo(sx - tx * o, sy - ty * o); tails.lineTo(mx - tx * o, my - ty * o);
+  tails.lineTo(ex - tx * (o + 2.2), ey - ty * (o + 2.2));
+  heads.moveTo(x + HEAD_R, y); heads.arc(x, y, HEAD_R, 0, Math.PI * 2);
+}
+
+function draw(){
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.fillStyle = C.ecf; ctx.fillRect(0, 0, W, H);
+
+  // cytoplasm region bounded by the membrane
+  ctx.beginPath();
+  ctx.moveTo(nodes[0].x, nodes[0].y);
+  for (let i = 1; i < nodes.length; i++) ctx.lineTo(nodes[i].x, nodes[i].y);
+  ctx.lineTo(W + 100, H + 100); ctx.lineTo(W + 100, -100); ctx.closePath();
+  ctx.fillStyle = C.cyto; ctx.fill();
+
+  // region labels
+  ctx.font = '600 15px "Atkinson Hyperlegible", system-ui, sans-serif';
+  ctx.fillStyle = C.muted; ctx.globalAlpha = 0.8;
+  const labelY = introEl.getBoundingClientRect().bottom + 30;
+  ctx.textAlign = 'right'; ctx.fillText('Outside the cell (extracellular fluid)', restX - 52, labelY);
+  ctx.textAlign = 'left'; ctx.fillText('Inside the cell (cytoplasm)', restX + 52, labelY);
+  ctx.globalAlpha = 1;
+
+  // glow under freshly changed membrane
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  for (let i = 0; i < nodes.length - 1; i++){
+    const g = nodes[i].g; if (g < 0.04) continue;
+    ctx.strokeStyle = `rgba(${C.glow},${(g * 0.45).toFixed(3)})`; ctx.lineWidth = HL * 2 + 18;
+    ctx.beginPath(); ctx.moveTo(nodes[i].x, nodes[i].y); ctx.lineTo(nodes[i + 1].x, nodes[i + 1].y); ctx.stroke();
+  }
+
+  // vesicle lumens
+  for (const v of vesicles){
+    ctx.fillStyle = v.innerSide === 'L' ? C.ecf : C.cyto;
+    ctx.beginPath(); ctx.arc(v.x, v.y, R + 2, 0, Math.PI * 2); ctx.fill();
+    if (v.g > 0.04){
+      ctx.strokeStyle = `rgba(${C.glow},${(v.g * 0.45).toFixed(3)})`; ctx.lineWidth = HL * 2 + 18;
+      ctx.beginPath(); ctx.arc(v.x, v.y, R, 0, Math.PI * 2); ctx.stroke();
+    }
+  }
+
+  const tails = new Path2D(), headsA = new Path2D(), headsB = new Path2D();
+  for (const s of leafletSamples(-1)) addLipid(tails, headsA, s.x, s.y, s.nx, s.ny, HL - 1.5);
+  for (const s of leafletSamples(1))  addLipid(tails, headsB, s.x, s.y, s.nx, s.ny, HL - 1.5);
+
+  for (const v of vesicles){
+    const outerH = v.innerSide === 'L' ? headsB : headsA;
+    const innerH = v.innerSide === 'L' ? headsA : headsB;
+    const ro = R + HL, no = Math.round(2 * Math.PI * ro / LIP_SP);
+    for (let i = 0; i < no; i++){
+      const a = v.rot + i / no * Math.PI * 2, nx = Math.cos(a), ny = Math.sin(a);
+      addLipid(tails, outerH, v.x + nx * ro, v.y + ny * ro, nx, ny, HL - 1.5);
+    }
+    const ri = R - HL, ni = Math.round(2 * Math.PI * ri / LIP_SP);
+    for (let i = 0; i < ni; i++){
+      const a = -v.rot * 0.7 + i / ni * Math.PI * 2, nx = -Math.cos(a), ny = -Math.sin(a);
+      addLipid(tails, innerH, v.x - nx * ri, v.y - ny * ri, nx, ny, HL - 1.5);
+    }
+  }
+
+  ctx.strokeStyle = C.tail; ctx.lineWidth = 1.4; ctx.stroke(tails);
+  ctx.fillStyle = C.A; ctx.fill(headsA);
+  ctx.fillStyle = C.B; ctx.fill(headsB);
+
+  if (overlay) ctx.drawImage(overlay, 0, 0, W, H);
+
+  // push indicator
+  if (ptr.mode === 'push'){
+    const prog = clamp(fingerDepth() / PINCH_DEPTH, 0, 1);
+    ctx.strokeStyle = C.ring; ctx.globalAlpha = 0.25; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(finger.x, finger.y, 12, 0, Math.PI * 2); ctx.stroke();
+    ctx.globalAlpha = 0.9; ctx.lineWidth = 3;
+    if (prog > 0){
+      ctx.beginPath(); ctx.arc(finger.x, finger.y, 12, -Math.PI / 2, -Math.PI / 2 + prog * Math.PI * 2); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+
+function loop(){ step(); draw(); requestAnimationFrame(loop); }
+
+window.addEventListener('resize', resize);
+resize();
+requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
